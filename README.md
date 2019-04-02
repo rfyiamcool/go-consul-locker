@@ -1,3 +1,3 @@
 # consulocker
 
-golang distributed lock base on consul
+golang distributed lock base on consul cluster
