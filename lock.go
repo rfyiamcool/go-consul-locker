@@ -140,9 +140,6 @@ func (d *DisLocker) TryLockAcquire(value map[string]string) (bool, error) {
 	return locked, nil
 }
 
-// DestroySession invalidates the consul session and indirectly release the acquired lock if any
-// Should be called in destructor function e.g clean-up, service reload
-// this will give others a chance to acquire lock
 func (d *DisLocker) ReleaseLock() error {
 	if d.SessionID == "" {
 		defaultLogger("cannot destroy empty session")
