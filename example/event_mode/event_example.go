@@ -1,29 +1,22 @@
 package main
 
 import (
-	"fmt"
 	"log"
-	"math/rand"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"github.com/rfyiamcool/consulocker"
-	"github.com/robfig/cron"
+	"github.com/rfyiamcool/go-consul-locker"
+	"github.com/rfyiamcool/go-consul-locker/example/common"
 )
-
-func makeServerId() string {
-	rand.Seed(time.Now().UnixNano())
-	return fmt.Sprintf("%d", rand.Int63())
-}
 
 func main() {
 	var d *consulocker.DisLocker
 	var err error
 
 	go func() {
-		mcron := NewMCron()
+		mcron := common.NewMCron()
 		d, err = consulocker.New(
 			&consulocker.Config{
 				Address:           "127.0.0.1:8500",
@@ -43,7 +36,7 @@ func main() {
 		for {
 			log.Println("try to acquire lock")
 			value := map[string]string{
-				"server_id": makeServerId(),
+				"server_id": common.MakeServerId(),
 			}
 
 			go d.RetryLockAcquire(value, acquireCh, releaseCh, errorCh)
@@ -78,26 +71,4 @@ func main() {
 		// 	log.Println("Error starting web server, exiting gracefully:", err)
 		// }
 	}
-}
-
-type MCron struct {
-	cron *cron.Cron
-}
-
-func NewMCron() *MCron {
-	mcron := &MCron{}
-	c := cron.New()
-	c.AddFunc("*/3 * * * * *", func() { fmt.Println("Every 3 sec") })
-	mcron.cron = c
-	return mcron
-}
-
-func (a *MCron) Start() {
-	log.Println("cron started")
-	a.cron.Start()
-}
-
-func (a *MCron) Stop() {
-	log.Println("cron stopped")
-	a.cron.Stop()
 }
