@@ -170,8 +170,10 @@ func (d *DisLocker) ReleaseLock() error {
 
 	defaultLogger("destroyed consul session: %s", d.SessionID)
 	d.IsLocked = false
-	// call once
-	close(d.doneChan)
+	if !d.isDoneChanCloed() {
+		// only call once
+		close(d.doneChan)
+	}
 
 	if d.consulLock != nil {
 		d.consulLock.Destroy()
@@ -284,7 +286,9 @@ func (d *DisLocker) acquireLock(value map[string]string, mode int, released chan
 			// wait event
 			<-resp
 			// close renew process
-			close(d.doneChan)
+			if !d.isDoneChanCloed() {
+				close(d.doneChan)
+			}
 			defaultLogger("lock released with session: %s", d.SessionID)
 			d.IsLocked = false
 			released <- true

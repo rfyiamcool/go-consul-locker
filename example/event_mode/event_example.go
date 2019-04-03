@@ -20,7 +20,7 @@ func main() {
 		d, err = consulocker.New(
 			&consulocker.Config{
 				Address:           "127.0.0.1:8500",
-				KeyName:           "LockKV",
+				KeyName:           "lock/add_user",
 				LockRetryInterval: time.Second * 5,
 			},
 		)
@@ -54,7 +54,6 @@ func main() {
 		}
 	}()
 
-	// errCh := make(chan error)
 	term := make(chan os.Signal)
 	signal.Notify(term, os.Interrupt, syscall.SIGTERM)
 
@@ -66,9 +65,5 @@ func main() {
 
 		time.Sleep(1 * time.Second)
 		log.Println("Exiting gracefully...")
-
-		// case err := <-errCh:
-		// 	log.Println("Error starting web server, exiting gracefully:", err)
-		// }
 	}
 }
