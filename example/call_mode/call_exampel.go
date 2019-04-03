@@ -26,8 +26,9 @@ func main() {
 	mcron := common.NewMCron()
 	d, err = consulocker.New(
 		&consulocker.Config{
-			Address: "127.0.0.1:8500",
-			KeyName: "lock/add_user",
+			Address:      "127.0.0.1:8500",
+			KeyName:      "lock/add_user",
+			LockWaitTime: 1 * time.Second,
 		},
 	)
 	if err != nil {
@@ -66,14 +67,14 @@ func main() {
 		defer wg.Done()
 
 		for {
-			isLocked, err := d.TryLockAcquire(value)
+			isLocked, err := d.TryLockAcquireNonBlock(value)
 			if !running {
 				log.Println("running is false")
 				return
 			}
 
 			if err != nil || isLocked == false {
-				log.Printf("can't acquire lock, err: %v\n", err)
+				log.Printf("can't acquire lock, sleep 1s, err: %v\n", err)
 				time.Sleep(1 * time.Second)
 				continue
 			}

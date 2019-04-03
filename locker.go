@@ -3,6 +3,7 @@ package consulocker
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	api "github.com/hashicorp/consul/api"
@@ -11,9 +12,12 @@ import (
 const (
 	// defaultLockRetryInterval how long we wait after a failed lock acquisition
 	defaultLockRetryInterval = 10 * time.Second
-
 	// session ttl
 	defautSessionTTL = 30 * time.Second
+	// if can't acquire, block wait to acquire
+	defaultLockWaitTime = 5 * time.Second
+	// block min wait time
+	minLockWaitTime = 10 * time.Millisecond
 
 	TryAcquireMode = iota
 	CallEventModel
@@ -23,6 +27,7 @@ var (
 	defaultLogger = func(tmpl string, s ...interface{}) {}
 
 	ErrKeyNameNull = errors.New("key is null")
+	ErrKeyInvalid  = errors.New("Key must not begin with a '/'")
 )
 
 // null logger
@@ -37,19 +42,22 @@ type DisLocker struct {
 	isClosedDoneChan int32
 	doneChan         chan struct{}
 
-	consulLock        *api.Lock
-	IsLocked          bool
-	ConsulClient      *api.Client
-	Key               string
-	SessionID         string
+	consulLock   *api.Lock
+	IsLocked     bool
+	ConsulClient *api.Client
+	Key          string
+	SessionID    string
+
+	LockWaitTime      time.Duration
 	LockRetryInterval time.Duration
 	SessionTTL        time.Duration
 }
 
 // Config is used to configure creation of client
 type Config struct {
-	Address           string
-	KeyName           string        // key on which lock to acquire
+	Address           string // consul addr
+	KeyName           string // key on which lock to acquire
+	LockWaitTime      time.Duration
 	LockRetryInterval time.Duration // interval at which attempt is done to acquire lock
 	SessionTTL        time.Duration // time after which consul session will expire and release the lock
 }
@@ -57,6 +65,10 @@ type Config struct {
 func (c *Config) check() error {
 	if c.KeyName == "" {
 		return ErrKeyNameNull
+	}
+
+	if strings.HasPrefix(c.KeyName, "/") {
+		return ErrKeyInvalid
 	}
 
 	return nil
@@ -69,8 +81,11 @@ func (c *Config) init() {
 	if c.SessionTTL == 0 {
 		c.SessionTTL = defautSessionTTL
 	}
+	if c.LockWaitTime == 0 {
+		c.LockWaitTime = defaultLockWaitTime
+	}
 	if c.Address == "" {
-		c.Address = "127.0.0.1"
+		c.Address = "127.0.0.1:8500"
 	}
 }
 
@@ -107,6 +122,7 @@ func New(o *Config) (*DisLocker, error) {
 	locker.doneChan = make(chan struct{})
 	locker.ConsulClient = consulClient
 	locker.Key = o.KeyName
+	locker.LockWaitTime = o.LockWaitTime
 	locker.LockRetryInterval = o.LockRetryInterval
 	locker.SessionTTL = o.SessionTTL
 
@@ -123,7 +139,7 @@ func (d *DisLocker) RetryLockAcquire(value map[string]string, acquired chan<- bo
 
 	for ; true; <-ticker.C {
 		value["lock_created_time"] = time.Now().Format(time.RFC3339)
-		lock, err := d.acquireLock(value, CallEventModel, released)
+		lock, err := d.acquireLock(d.LockWaitTime, value, CallEventModel, released)
 		if err != nil {
 			defaultLogger("error on acquireLock :", err, "retry in -", d.LockRetryInterval)
 			errorChan <- err
@@ -139,9 +155,8 @@ func (d *DisLocker) RetryLockAcquire(value map[string]string, acquired chan<- bo
 	}
 }
 
-// TryLockAcquire
-func (d *DisLocker) TryLockAcquire(value map[string]string) (bool, error) {
-	locked, err := d.acquireLock(value, TryAcquireMode, nil)
+func (d *DisLocker) tryLockAcquire(wait time.Duration, value map[string]string) (bool, error) {
+	locked, err := d.acquireLock(wait, value, TryAcquireMode, nil)
 	if err != nil {
 		defaultLogger("acquireLock failed, err: %v", err)
 		return locked, err
@@ -154,6 +169,21 @@ func (d *DisLocker) TryLockAcquire(value map[string]string) (bool, error) {
 
 	d.IsLocked = locked
 	return locked, nil
+}
+
+// TryLockAcquire
+func (d *DisLocker) TryLockAcquire(value map[string]string) (bool, error) {
+	return d.tryLockAcquire(d.LockWaitTime, value)
+}
+
+// TryLockAcquire
+func (d *DisLocker) TryLockAcquireNonBlock(value map[string]string) (bool, error) {
+	return d.tryLockAcquire(minLockWaitTime, value)
+}
+
+// TryLockAcquireBlock
+func (d *DisLocker) TryLockAcquireBlock(waitTime time.Duration, value map[string]string) (bool, error) {
+	return d.tryLockAcquire(waitTime, value)
 }
 
 // ReleaseLock
@@ -223,7 +253,7 @@ func (d *DisLocker) isDoneChanCloed() bool {
 	}
 }
 
-func (d *DisLocker) acquireLock(value map[string]string, mode int, released chan<- bool) (bool, error) {
+func (d *DisLocker) acquireLock(waitTime time.Duration, value map[string]string, mode int, released chan<- bool) (bool, error) {
 	if d.SessionID == "" {
 		err := d.recreateSession()
 		if err != nil {
@@ -245,8 +275,8 @@ func (d *DisLocker) acquireLock(value map[string]string, mode int, released chan
 			Key:     d.Key,
 			Value:   b,
 			Session: d.SessionID,
-			// block wait time
-			LockWaitTime: 1 * time.Second,
+			// block wait to acquire, consul defualt 15s
+			LockWaitTime: waitTime,
 			LockTryOnce:  true,
 		},
 	)
