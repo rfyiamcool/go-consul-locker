@@ -186,28 +186,34 @@ func (d *DisLocker) TryLockAcquireBlock(waitTime time.Duration, value map[string
 	return d.tryLockAcquire(waitTime, value)
 }
 
-// ReleaseLock
 func (d *DisLocker) ReleaseLock() error {
 	if d.SessionID == "" {
 		defaultLogger("cannot destroy empty session")
 		return nil
 	}
 
+	defer func() {
+		defaultLogger("destroyed consul session: %s", d.SessionID)
+		d.IsLocked = false
+		if !d.isDoneChanCloed() {
+			// only call once
+			close(d.doneChan)
+		}
+
+		if d.consulLock != nil {
+			// DELETE /v1/kv/
+			d.consulLock.Destroy()
+		}
+
+		d.SessionID = ""
+	}()
+
+	// PUT /v1/session/destroy/
 	_, err := d.ConsulClient.Session().Destroy(d.SessionID, nil)
 	if err != nil {
 		return err
 	}
 
-	defaultLogger("destroyed consul session: %s", d.SessionID)
-	d.IsLocked = false
-	if !d.isDoneChanCloed() {
-		// only call once
-		close(d.doneChan)
-	}
-
-	if d.consulLock != nil {
-		d.consulLock.Destroy()
-	}
 	return nil
 }
 
@@ -224,6 +230,12 @@ func (d *DisLocker) AsyncStartRenewProcess() {
 	go func() {
 		d.StartRenewProcess()
 	}()
+}
+
+func (d *DisLocker) StopRenewProcess() {
+	if !d.isDoneChanCloed() {
+		close(d.doneChan)
+	}
 }
 
 func (d *DisLocker) createSession() (string, error) {
@@ -277,13 +289,16 @@ func (d *DisLocker) acquireLock(waitTime time.Duration, value map[string]string,
 			Session: d.SessionID,
 			// block wait to acquire, consul defualt 15s
 			LockWaitTime: waitTime,
-			LockTryOnce:  true,
+			// if true, only acquire lock once, return.
+			// if false, while acquire lock with WaitTime
+			LockTryOnce: true,
 		},
 	)
 	if err != nil {
 		return false, err
 	}
 
+	// the sessionID maybe is expired or invalided ID
 	session, _, err := d.ConsulClient.Session().Info(d.SessionID, nil)
 	if err == nil && session == nil {
 		defaultLogger("consul session: %s is invalid now", d.SessionID)
@@ -295,7 +310,7 @@ func (d *DisLocker) acquireLock(waitTime time.Duration, value map[string]string,
 		return false, err
 	}
 
-	resp, err := lock.Lock(nil)
+	resp, err := lock.Lock(d.doneChan)
 	if err != nil {
 		return false, err
 	}
@@ -332,22 +347,22 @@ func (d *DisLocker) acquireLock(waitTime time.Duration, value map[string]string,
 }
 
 func createSession(client *api.Client, consulKey string, ttl time.Duration) (string, error) {
-	agentChecks, err := client.Agent().Checks()
-	if err != nil {
-		defaultLogger("error on getting checks, err: %v", err)
-		return "", err
-	}
+	// agentChecks, err := client.Agent().Checks()
+	// if err != nil {
+	// 	defaultLogger("error on getting checks, err: %v", err)
+	// 	return "", err
+	// }
 
-	checks := []string{}
-	checks = append(checks, "serfHealth")
-	for _, j := range agentChecks {
-		checks = append(checks, j.CheckID)
-	}
+	// checks := []string{}
+	// checks = append(checks, "serfHealth")
+	// for _, j := range agentChecks {
+	// 	checks = append(checks, j.CheckID)
+	// }
 
 	sessionID, _, err := client.Session().Create(
 		&api.SessionEntry{
-			Name:     consulKey,
-			Checks:   checks,
+			Name: consulKey,
+			// Checks:   checks,
 			Behavior: api.SessionBehaviorDelete,
 			// after release lock, other get lock wating lockDelay time.
 			LockDelay: 1 * time.Microsecond,

@@ -28,7 +28,7 @@ func main() {
 		&consulocker.Config{
 			Address:      "127.0.0.1:8500",
 			KeyName:      "lock/add_user",
-			LockWaitTime: 1 * time.Second,
+			LockWaitTime: 5 * time.Second,
 		},
 	)
 	if err != nil {
@@ -54,7 +54,7 @@ func main() {
 			if err := d.ReleaseLock(); err != nil {
 				log.Println(err)
 			}
-			log.Println("release lock ok")
+			log.Println("signal release lock ok")
 
 			mcron.Stop()
 			log.Println("Exiting gracefully...")
@@ -66,23 +66,47 @@ func main() {
 	go func() {
 		defer wg.Done()
 
-		for {
-			isLocked, err := d.TryLockAcquireNonBlock(value)
+		var c = 0
+		for running {
+			isLocked, err := d.TryLockAcquire(value)
 			if !running {
-				log.Println("running is false")
 				return
 			}
 
 			if err != nil || isLocked == false {
-				log.Printf("can't acquire lock, sleep 1s, err: %v\n", err)
+				log.Printf("can't acquire lock, sleep 1s, err: %v, isLocked: %v\n", err, isLocked)
 				time.Sleep(1 * time.Second)
 				continue
 			}
 
+			log.Println("acquire lock ok")
 			mcron.Start()
+
 			for running {
 				d.Renew()
 				time.Sleep(1 * time.Second)
+
+				c++
+				if c < 10 {
+					continue
+				}
+
+				// reset
+				c = 0
+
+				// stop cron task
+				mcron.Stop()
+
+				// release lock
+				if err := d.ReleaseLock(); err != nil {
+					log.Println(err)
+				}
+				log.Println("----")
+				log.Println("active release lock ok; sleep 3s")
+				log.Println("----")
+
+				time.Sleep(3 * time.Second)
+				break
 			}
 		}
 	}()
